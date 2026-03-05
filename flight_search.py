@@ -54,8 +54,9 @@ MIDDLE_EAST_AIRLINES = {
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def parse_duration_hours(text: str) -> float:
-    h = re.search(r"(\d+)\s*hr", text)
-    m = re.search(r"(\d+)\s*min", text)
+    # handles "25h 50min", "13 hr 45 min", "13h45m"
+    h = re.search(r"(\d+)\s*h(?:r)?(?!\w)", text)
+    m = re.search(r"(\d+)\s*m(?:in)?(?!\w)", text)
     return (int(h.group(1)) if h else 0) + (int(m.group(1)) if m else 0) / 60
 
 def parse_price(text: str) -> Optional[int]:
@@ -74,149 +75,39 @@ def is_middle_east(flight: dict) -> bool:
             return True
     return flight.get("airline_code", "").upper() in MIDDLE_EAST_AIRLINES
 
-# ── SCRAPING ──────────────────────────────────────────────────────────────────
-def accept_cookies(page: Page):
-    for sel in ['button:has-text("Accept all")', 'button:has-text("I agree")',
-                '[aria-label="Accept all"]', 'button:has-text("Agree")']:
+# ── SCRAPING (Skyscanner) ─────────────────────────────────────────────────────
+KNOWN_AIRLINES = {
+    "Aer Lingus": "EI", "British Airways": "BA", "Lufthansa": "LH",
+    "Air France": "AF", "KLM": "KL", "Finnair": "AY", "Swiss": "LX",
+    "Turkish Airlines": "TK", "China Eastern": "MU", "Air China": "CA",
+    "Cathay Pacific": "CX", "Singapore Airlines": "SQ", "Hainan Airlines": "HU",
+    "Xiamen Air": "MF", "Shenzhen Airlines": "ZH", "Virgin Atlantic": "VS",
+    "Iberia": "IB", "TAP Air Portugal": "TP", "LOT Polish": "LO",
+}
+
+def _sky_date(iso: str) -> str:
+    """'2026-04-01' -> '260401'"""
+    return datetime.strptime(iso, "%Y-%m-%d").strftime("%y%m%d")
+
+def _dismiss_overlays(page: Page):
+    for sel in [
+        'button:has-text("Accept all")', 'button:has-text("Accept")',
+        'button:has-text("Agree")', '[data-testid="acceptCookiesButton"]',
+        'button:has-text("Got it")', 'button:has-text("Close")',
+        '[aria-label="Close"]', 'button:has-text("OK")',
+    ]:
         try:
             btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
+            if btn.is_visible(timeout=1000):
                 btn.click()
-                page.wait_for_timeout(800)
-                return
-        except Exception:
-            pass
-
-def fill_location(page: Page, placeholder_hint: str, city: str, airport_code: str):
-    """Fill origin or destination field and pick the matching suggestion."""
-    selectors = [
-        f'input[placeholder*="{placeholder_hint}"]',
-        f'input[aria-label*="{placeholder_hint}"]',
-    ]
-    inp = None
-    for sel in selectors:
-        try:
-            c = page.locator(sel).first
-            if c.is_visible(timeout=2000):
-                inp = c
-                break
-        except Exception:
-            pass
-
-    if not inp:
-        print(f"  [WARN] Could not find input for '{placeholder_hint}'")
-        return
-
-    inp.triple_click()
-    inp.fill("")
-    inp.type(city, delay=70)
-    page.wait_for_timeout(2000)
-
-    options = page.locator('[role="option"], [role="listitem"]').all()
-    for opt in options:
-        try:
-            t = opt.inner_text()
-            if airport_code in t:
-                opt.click()
-                page.wait_for_timeout(700)
-                return
-        except Exception:
-            pass
-
-    # Fallback: take first suggestion
-    try:
-        page.locator('[role="option"]').first.click()
-        page.wait_for_timeout(700)
-    except Exception:
-        page.keyboard.press("ArrowDown")
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(700)
-
-def select_calendar_date(page: Page, iso_date: str):
-    """Click the correct day in the Google Flights calendar picker."""
-    dt = datetime.strptime(iso_date, "%Y-%m-%d")
-    day = dt.day
-    # Try data-date attribute first (most reliable)
-    for attempt in range(14):
-        for sel in [
-            f'[data-date="{iso_date}"]',
-            f'[aria-label*="{dt.strftime("%B")}"][aria-label*="{dt.year}"][aria-label*=" {day},"]',
-            f'td[data-date="{iso_date}"]',
-            f'button[data-date="{iso_date}"]',
-        ]:
-            try:
-                cell = page.locator(sel).first
-                if cell.is_visible(timeout=1000):
-                    cell.click()
-                    page.wait_for_timeout(500)
-                    return
-            except Exception:
-                pass
-        # Navigate to next month
-        for nav_sel in ['[aria-label="Next month"]', 'button[data-id="next"]', 'button:has-text("›")']:
-            try:
-                btn = page.locator(nav_sel).first
-                if btn.is_visible(timeout=1000):
-                    btn.click()
-                    page.wait_for_timeout(600)
-                    break
-            except Exception:
-                pass
-
-def set_dates(page: Page, depart_date: str, return_date: str):
-    """Open the date picker and select departure + return dates."""
-    date_btn_selectors = [
-        '[aria-label*="Departure"]',
-        'input[placeholder*="Departure"]',
-        '[data-label*="Departure"]',
-    ]
-    opened = False
-    for sel in date_btn_selectors:
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                page.wait_for_timeout(1500)
-                opened = True
-                break
-        except Exception:
-            pass
-
-    if not opened:
-        print("  [WARN] Could not open date picker")
-        return
-
-    # Navigate calendar to correct month then click dates
-    select_calendar_date(page, depart_date)
-    page.wait_for_timeout(400)
-    select_calendar_date(page, return_date)
-    page.wait_for_timeout(400)
-
-    # Click Done
-    for done_sel in ['button:has-text("Done")', '[aria-label="Done"]']:
-        try:
-            btn = page.locator(done_sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                page.wait_for_timeout(700)
-                return
-        except Exception:
-            pass
-
-def click_search(page: Page):
-    for sel in ['button[aria-label="Search"]', 'button:has-text("Search")', '[type="submit"]']:
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
+                page.wait_for_timeout(600)
                 return
         except Exception:
             pass
 
 def parse_flight_block(text: str, depart_date: str) -> Optional[dict]:
-    """Parse a raw text block from a Google Flights result card."""
+    """Parse raw text extracted from a Skyscanner flight card."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-
     flight = {"depart_date": depart_date}
 
     # Price
@@ -228,10 +119,10 @@ def parse_flight_block(text: str, depart_date: str) -> Optional[dict]:
     if "price" not in flight:
         return None
 
-    # Duration
+    # Duration — Skyscanner: "25h 50min" | Google: "25 hr 50 min"
     for line in lines:
-        if "hr" in line and "min" in line:
-            flight["duration_text"] = line
+        if re.search(r'\d+\s*h', line, re.I) and re.search(r'\d+\s*m', line, re.I):
+            flight["duration_text"] = line.strip()
             flight["duration_hours"] = parse_duration_hours(line)
             break
     flight.setdefault("duration_hours", 999)
@@ -239,83 +130,84 @@ def parse_flight_block(text: str, depart_date: str) -> Optional[dict]:
     # Stops
     for line in lines:
         low = line.lower()
-        if "nonstop" in low:
+        if "direct" in low or "nonstop" in low:
             flight["stops"] = 0
-            flight["stops_text"] = "Nonstop"
+            flight["stops_text"] = "Direct"
             break
         if "stop" in low:
             m = re.search(r"(\d+)\s*stop", low)
             flight["stops"] = int(m.group(1)) if m else 1
             flight["stops_text"] = line
-            # Look for layover airport codes (3-letter uppercase)
-            codes = re.findall(r'\b([A-Z]{3})\b', line)
-            flight["layover"] = " ".join(codes)
+            flight["layover"] = " ".join(re.findall(r'\b([A-Z]{3})\b', line))
             break
     flight.setdefault("stops", 0)
 
-    # Times  (e.g. "10:30 – 09:15+1")
+    # Times
     for line in lines:
-        if re.search(r'\d{1,2}:\d{2}', line) and ("–" in line or "-" in line):
+        if re.search(r'\d{1,2}:\d{2}', line) and re.search(r'[–\-—]', line):
             flight["times"] = line
             break
 
-    # Airline (first non-numeric, non-price, non-time line of reasonable length)
+    # Airline
     for line in lines:
-        if (5 < len(line) < 60
-                and not re.search(r'^\d', line)
-                and "€" not in line and "$" not in line
-                and "hr" not in line and "stop" not in line.lower()
-                and not re.search(r'\d:\d{2}', line)):
-            # Guess airline code from known carriers
-            airline_code = ""
-            known = {
-                "Aer Lingus": "EI", "British Airways": "BA", "Lufthansa": "LH",
-                "Air France": "AF", "KLM": "KL", "Finnair": "AY",
-                "Swiss": "LX", "Turkish": "TK", "China Eastern": "MU",
-                "Air China": "CA", "Cathay Pacific": "CX", "Singapore": "SQ",
-                "Hainan": "HU", "Xiamen": "MF", "Shenzhen": "ZH",
-            }
-            for name, code in known.items():
-                if name.lower() in line.lower():
-                    airline_code = code
-                    break
-            flight["airline"] = line
-            flight["airline_code"] = airline_code
+        for name, code in KNOWN_AIRLINES.items():
+            if name.lower() in line.lower():
+                flight["airline"] = name
+                flight["airline_code"] = code
+                break
+        if "airline" in flight:
             break
+
+    if "airline" not in flight:
+        for line in lines:
+            if (5 < len(line) < 60
+                    and not re.search(r'^\d', line)
+                    and "€" not in line and "$" not in line
+                    and not re.search(r'\d:\d{2}', line)
+                    and "stop" not in line.lower()
+                    and not re.search(r'\d+\s*h', line, re.I)):
+                flight["airline"] = line
+                flight["airline_code"] = ""
+                break
     flight.setdefault("airline", "Unknown Airline")
 
     return flight
 
 def extract_results(page: Page, depart_date: str) -> list:
-    try:
-        page.wait_for_selector('[role="listitem"], li[class]', timeout=15000)
-    except PWTimeout:
-        print("  [WARN] Timed out waiting for results")
-        return []
-
-    page.wait_for_timeout(2000)
-
-    result_selectors = [
-        'li[role="row"]',
-        '[jsname="IWWDBc"]',
-        'ul[role="list"] > li',
+    # Skyscanner loads results progressively — wait generously
+    card_selectors = [
+        '[data-testid="FlightCard"]',
+        '[data-testid*="flight-card"]',
+        'article[class*="FlightCard"]',
+        '[class*="FlightCard"]',
+        '[class*="flightCard"]',
+        '[role="list"] > li',
         '[role="listitem"]',
     ]
     items = []
-    for sel in result_selectors:
-        items = page.locator(sel).all()
-        if len(items) >= 3:
-            break
+    for sel in card_selectors:
+        try:
+            page.wait_for_selector(sel, timeout=18000)
+            items = page.locator(sel).all()
+            if len(items) >= 2:
+                print(f"  Found {len(items)} cards ({sel})")
+                break
+        except Exception:
+            continue
 
-    print(f"  Found {len(items)} candidate result items")
+    if not items:
+        print("  [WARN] No cards found — parsing full page text")
+        try:
+            body = page.inner_text("body")
+            return _parse_body_text(body, depart_date)
+        except Exception:
+            return []
 
     flights = []
     for item in items[:20]:
         try:
             text = item.inner_text()
-            if len(text) < 30:
-                continue
-            if not re.search(r'[€$£]\s*\d{3}|\d{3,4}\s*(EUR|USD)', text):
+            if len(text) < 20:
                 continue
             f = parse_flight_block(text, depart_date)
             if f:
@@ -324,43 +216,59 @@ def extract_results(page: Page, depart_date: str) -> list:
             continue
     return flights
 
+def _parse_body_text(body: str, depart_date: str) -> list:
+    """Last-resort: find flight-like chunks in raw page text."""
+    flights = []
+    chunks = re.split(r'(?=€\s*\d{3,4})', body)
+    for chunk in chunks[:25]:
+        if len(chunk) < 30:
+            continue
+        f = parse_flight_block(chunk, depart_date)
+        if f:
+            flights.append(f)
+    return flights
+
 def scrape_flights(depart_date: str) -> list:
-    print(f"\n  Searching: {depart_date} -> {RETURN_DATE}")
+    out_date = _sky_date(depart_date)
+    ret_date = _sky_date(RETURN_DATE)
+    url = (
+        f"https://www.skyscanner.net/transport/flights/dub/pvg/"
+        f"{out_date}/{ret_date}/"
+        f"?adults=1&cabinclass=economy&rtn=1&preferdirects=false"
+    )
+    print(f"\n  Skyscanner {depart_date}: {url}")
     flights = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"],
         )
         ctx = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ),
-            viewport={"width": 1280, "height": 900},
+            viewport={"width": 1366, "height": 900},
             locale="en-GB",
             timezone_id="Europe/Dublin",
         )
-        # Remove webdriver property
-        ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         page = ctx.new_page()
 
         try:
-            page.goto("https://www.google.com/travel/flights", wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(2500)
-
-            accept_cookies(page)
-            fill_location(page, "Where from", ORIGIN, ORIGIN_CODE)
-            fill_location(page, "Where to", DESTINATION, DESTINATION_CODE)
-            set_dates(page, depart_date, RETURN_DATE)
-            click_search(page)
-            page.wait_for_timeout(6000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000)
+            _dismiss_overlays(page)
+            page.wait_for_timeout(5000)   # results load progressively
+            _dismiss_overlays(page)       # second pass for late modals
 
             flights = extract_results(page, depart_date)
-
-            # Save screenshot for debugging
-            page.screenshot(path=f"/tmp/flights_{depart_date}.png")
+            print(f"  Extracted {len(flights)} flights")
+            page.screenshot(path=f"/tmp/sky_{depart_date}.png")
 
         except Exception as e:
             print(f"  [ERROR] {e}")
@@ -466,7 +374,7 @@ def _render_flight_card(f: dict, rank_label: str, accent_color: str, PRIMARY: st
         {times_html}
         {layover_html}
         <div style="text-align:center;margin-top:20px;">
-          <a href="https://www.google.com/travel/flights"
+          <a href="https://www.skyscanner.net/transport/flights/dub/pvg/"
              style="background:linear-gradient(135deg,{ACCENT},#f5c842);color:{PRIMARY};
                     text-decoration:none;padding:12px 44px;border-radius:30px;
                     font-weight:700;font-size:14px;display:inline-block;">
@@ -546,7 +454,7 @@ def build_html(flights: list, fallback: list = None) -> str:
   <div style="padding:32px 16px 8px;">{cards}</div>
 
   <div style="text-align:center;padding:20px;color:#aaa;font-size:12px;border-top:1px solid #dce3ec;margin-top:8px;">
-    <p style="margin:0;">Prices from Google Flights. Always verify before booking.</p>
+    <p style="margin:0;">Prices from Skyscanner. Always verify before booking.</p>
     <p style="margin:4px 0 0;">Auto-report runs daily at 10:30 &amp; 22:30 Dublin time.</p>
   </div>
 
