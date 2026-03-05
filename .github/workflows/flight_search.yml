@@ -10,7 +10,7 @@ on:
 
 jobs:
   search-flights:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
@@ -26,8 +26,17 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Install Playwright system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libgbm1 libpango-1.0-0 libcairo2 \
+            libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxkbcommon0 \
+            libasound2t64 libx11-xcb1 libxcb-dri3-0
+
       - name: Install Playwright Chromium
-        run: playwright install chromium --with-deps
+        run: playwright install chromium
 
       - name: Run flight search
         env:
