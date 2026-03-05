@@ -387,101 +387,139 @@ def filter_flights(flights: list) -> list:
     out.sort(key=lambda x: x.get("price", 9999))
     return out
 
+def find_closest_fallback(all_raw: list) -> list:
+    """
+    When no flight meets all criteria, return the single closest match:
+    - Still avoids Middle East
+    - Still max 1 stop
+    - Relaxes the duration limit — picks the shortest duration available
+    """
+    candidates = [
+        f for f in all_raw
+        if f.get("stops", 999) <= MAX_STOPS and not is_middle_east(f)
+    ]
+    if not candidates:
+        # Last resort: just avoid Middle East, ignore stop count
+        candidates = [f for f in all_raw if not is_middle_east(f)]
+    if not candidates:
+        candidates = all_raw
+
+    # Sort by duration (shortest first), then price
+    candidates.sort(key=lambda x: (x.get("duration_hours", 999), x.get("price", 9999)))
+    return candidates[:1]
+
 # ── EMAIL HTML ────────────────────────────────────────────────────────────────
-def build_html(flights: list) -> str:
-    now_str = datetime.now().strftime("%A, %d %B %Y at %H:%M")
-    count = len(flights)
+def _render_flight_card(f: dict, rank_label: str, accent_color: str, PRIMARY: str, ACCENT: str) -> str:
+    price   = f.get("price", "?")
+    airline = f.get("airline", "Unknown")
+    dur     = f.get("duration_text", "&mdash;")
+    stops   = f.get("stops_text", "&mdash;")
+    times   = f.get("times", "")
+    layover = f.get("layover", "")
+
+    try:
+        d = datetime.strptime(f["depart_date"], "%Y-%m-%d")
+        depart_nice = d.strftime("%a %d %b %Y")
+    except Exception:
+        depart_nice = f.get("depart_date", "")
+
+    layover_html = (
+        f'<p style="margin:8px 0 0;font-size:12px;color:#8898aa;">Layover: {layover}</p>'
+        if layover else ""
+    )
+    times_html = (
+        f'<p style="text-align:center;font-size:16px;letter-spacing:2px;color:{PRIMARY};margin:16px 0 0;">{times}</p>'
+        if times else ""
+    )
+
+    return f"""
+    <div style="background:#fff;border-radius:16px;margin:0 auto 28px;max-width:660px;
+                overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.09);border-top:5px solid {accent_color};">
+      <div style="background:linear-gradient(135deg,{PRIMARY},#265c8c);
+                  padding:14px 24px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:{ACCENT};font-weight:700;font-size:13px;letter-spacing:1px;">{rank_label}</span>
+        <span style="color:#fff;font-size:30px;font-weight:800;">&euro;{price:,}</span>
+      </div>
+      <div style="padding:20px 24px 24px;">
+        <p style="margin:0 0 4px;font-size:19px;font-weight:700;color:{PRIMARY};">{airline}</p>
+        <p style="margin:0 0 16px;font-size:13px;color:#8898aa;">Dublin (DUB) &rarr; Shanghai Pudong (PVG) &nbsp;&middot;&nbsp; Return by 5 May 2026</p>
+        <table width="100%" cellpadding="0" cellspacing="8">
+          <tr>
+            <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
+              <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Departs</p>
+              <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{depart_nice}</p>
+            </td>
+            <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
+              <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Duration</p>
+              <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{dur}</p>
+            </td>
+            <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
+              <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Stops</p>
+              <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{stops}</p>
+            </td>
+            <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
+              <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Return by</p>
+              <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">5 May 2026</p>
+            </td>
+          </tr>
+        </table>
+        {times_html}
+        {layover_html}
+        <div style="text-align:center;margin-top:20px;">
+          <a href="https://www.google.com/travel/flights"
+             style="background:linear-gradient(135deg,{ACCENT},#f5c842);color:{PRIMARY};
+                    text-decoration:none;padding:12px 44px;border-radius:30px;
+                    font-weight:700;font-size:14px;display:inline-block;">
+            View &amp; Book &rarr;
+          </a>
+        </div>
+      </div>
+    </div>"""
+
+
+def build_html(flights: list, fallback: list = None) -> str:
+    now_str       = datetime.now().strftime("%A, %d %B %Y at %H:%M")
+    is_fallback   = not flights and bool(fallback)
+    to_render     = flights if flights else (fallback or [])
+    count         = len(flights)
 
     PRIMARY = "#1a3a5c"
     ACCENT  = "#e8a020"
     BG      = "#eef2f7"
+    medals  = ["#f0b429", "#b0b8c1", "#c97d3e"]
+    labels  = ["Best Price", "2nd Best", "3rd Best"]
 
     cards = ""
-    if not flights:
+
+    if not to_render:
         cards = """
         <div style="text-align:center;padding:60px 20px;color:#999;">
-            <p style="font-size:48px;margin:0 0 16px;">&#9992;&#65039;</p>
-            <h3 style="font-weight:300;color:#aaa;margin:0 0 8px;">No qualifying flights found</h3>
-            <p style="margin:0;font-size:13px;">Criteria: max 1 stop &middot; max 20 hrs &middot; no Middle East &middot; depart Apr 1-5</p>
+          <p style="font-size:48px;margin:0 0 16px;">&#9992;&#65039;</p>
+          <h3 style="font-weight:300;color:#aaa;margin:0 0 8px;">No flights found at all</h3>
+          <p style="margin:0;font-size:13px;">Google Flights may have blocked the search — will retry next run.</p>
         </div>"""
     else:
-        medals = ["#f0b429", "#b0b8c1", "#c97d3e"]
-        labels = ["Best Price", "2nd Best", "3rd Best"]
-        for i, f in enumerate(flights[:8]):
-            accent_color = medals[i] if i < 3 else "#8898aa"
-            rank_label   = labels[i] if i < 3 else f"#{i+1}"
-
-            price    = f.get("price", "?")
-            airline  = f.get("airline", "Unknown")
-            dur      = f.get("duration_text", "&mdash;")
-            stops    = f.get("stops_text", "&mdash;")
-            times    = f.get("times", "")
-            layover  = f.get("layover", "")
-
-            try:
-                d = datetime.strptime(f["depart_date"], "%Y-%m-%d")
-                depart_nice = d.strftime("%a %d %b %Y")
-            except Exception:
-                depart_nice = f.get("depart_date", "")
-
-            layover_html = (
-                f'<p style="margin:8px 0 0;font-size:12px;color:#8898aa;">Layover: {layover}</p>'
-                if layover else ""
-            )
-            times_html = (
-                f'<p style="text-align:center;font-size:16px;letter-spacing:2px;'
-                f'color:{PRIMARY};margin:16px 0 0;">{times}</p>'
-                if times else ""
-            )
-
+        if is_fallback:
+            over = to_render[0].get("duration_hours", 0) - MAX_DURATION_HOURS
             cards += f"""
-            <div style="background:#fff;border-radius:16px;margin:0 auto 28px;max-width:660px;
-                        overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.09);
-                        border-top:5px solid {accent_color};">
-              <!-- header -->
-              <div style="background:linear-gradient(135deg,{PRIMARY},#265c8c);
-                          padding:14px 24px;display:flex;justify-content:space-between;align-items:center;">
-                <span style="color:{ACCENT};font-weight:700;font-size:13px;letter-spacing:1px;">{rank_label}</span>
-                <span style="color:#fff;font-size:30px;font-weight:800;">&euro;{price:,}</span>
-              </div>
-              <!-- body -->
-              <div style="padding:20px 24px 24px;">
-                <p style="margin:0 0 4px;font-size:19px;font-weight:700;color:{PRIMARY};">{airline}</p>
-                <p style="margin:0 0 16px;font-size:13px;color:#8898aa;">Dublin (DUB) &rarr; Shanghai Pudong (PVG) &nbsp;&middot;&nbsp; Return by 5 May 2026</p>
-                <!-- detail grid -->
-                <table width="100%" cellpadding="0" cellspacing="8">
-                  <tr>
-                    <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
-                      <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Departs</p>
-                      <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{depart_nice}</p>
-                    </td>
-                    <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
-                      <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Duration</p>
-                      <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{dur}</p>
-                    </td>
-                    <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
-                      <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Stops</p>
-                      <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">{stops}</p>
-                    </td>
-                    <td style="background:#f4f7fb;border-radius:10px;padding:12px 14px;width:25%;">
-                      <p style="margin:0 0 4px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;">Return by</p>
-                      <p style="margin:0;font-size:13px;font-weight:600;color:{PRIMARY};">5 May 2026</p>
-                    </td>
-                  </tr>
-                </table>
-                {times_html}
-                {layover_html}
-                <!-- CTA -->
-                <div style="text-align:center;margin-top:20px;">
-                  <a href="https://www.google.com/travel/flights"
-                     style="background:linear-gradient(135deg,{ACCENT},#f5c842);color:{PRIMARY};
-                            text-decoration:none;padding:12px 44px;border-radius:30px;
-                            font-weight:700;font-size:14px;display:inline-block;">
-                    View &amp; Book &rarr;
-                  </a>
-                </div>
-              </div>
-            </div>"""
+        <div style="background:#fff4e0;border:2px dashed {ACCENT};border-radius:12px;
+                    max-width:660px;margin:0 auto 24px;padding:16px 24px;text-align:center;">
+          <p style="margin:0;font-size:14px;color:#a0600a;font-weight:600;">
+            No flights matched all criteria (max 1 stop &middot; max 20 hrs &middot; no Middle East).<br>
+            Showing closest available &mdash; only <strong>{over:.1f} hr(s) over</strong> the duration limit.
+          </p>
+        </div>"""
+
+        for i, f in enumerate(to_render[:8]):
+            accent_color = medals[i] if i < 3 else "#8898aa"
+            rank_label   = ("Closest Match" if is_fallback and i == 0
+                            else (labels[i] if i < 3 else f"#{i+1}"))
+            cards += _render_flight_card(f, rank_label, accent_color, PRIMARY, ACCENT)
+
+    info_label = (
+        f"Closest match shown (no exact results)" if is_fallback
+        else f"{count} qualifying flight(s) found"
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -492,7 +530,6 @@ def build_html(flights: list) -> str:
 </head>
 <body style="margin:0;padding:0;background:{BG};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
 
-  <!-- Hero -->
   <div style="background:linear-gradient(135deg,{PRIMARY} 0%,#0d2d4a 100%);padding:44px 20px;text-align:center;">
     <p style="margin:0 0 10px;font-size:40px;">&#9992;&#65039; &#127464;&#127475;</p>
     <h1 style="margin:0;color:#fff;font-size:30px;font-weight:800;letter-spacing:-0.5px;">Dublin &rarr; Shanghai</h1>
@@ -500,19 +537,14 @@ def build_html(flights: list) -> str:
     <p style="margin:4px 0 0;color:rgba(255,255,255,0.5);font-size:13px;">Depart: 1&ndash;5 April 2026 &nbsp;&middot;&nbsp; Return by: 5 May 2026</p>
   </div>
 
-  <!-- Info bar -->
   <div style="background:{ACCENT};padding:10px 20px;text-align:center;">
     <span style="color:{PRIMARY};font-size:13px;font-weight:600;">
-      &#128336; Searched: {now_str} Dublin time &nbsp;&middot;&nbsp; {count} qualifying flight(s) found
+      &#128336; Searched: {now_str} Dublin time &nbsp;&middot;&nbsp; {info_label}
     </span>
   </div>
 
-  <!-- Cards -->
-  <div style="padding:32px 16px 8px;">
-    {cards}
-  </div>
+  <div style="padding:32px 16px 8px;">{cards}</div>
 
-  <!-- Footer -->
   <div style="text-align:center;padding:20px;color:#aaa;font-size:12px;border-top:1px solid #dce3ec;margin-top:8px;">
     <p style="margin:0;">Prices from Google Flights. Always verify before booking.</p>
     <p style="margin:4px 0 0;">Auto-report runs daily at 10:30 &amp; 22:30 Dublin time.</p>
@@ -521,13 +553,13 @@ def build_html(flights: list) -> str:
 </body>
 </html>"""
 
+
 # ── EMAIL SEND ────────────────────────────────────────────────────────────────
-def send_email(html: str, flights: list):
-    best = f"€{flights[0]['price']:,}" if flights else "No results"
-    subject = (
-        f"DUB->PVG Flights: {best} best price | "
-        f"{datetime.now().strftime('%d %b %H:%M')}"
-    )
+def send_email(html: str, flights: list, fallback: list = None):
+    display = flights or fallback or []
+    best    = f"€{display[0]['price']:,}" if display else "No results"
+    tag     = " [closest match]" if not flights and fallback else ""
+    subject = f"DUB->PVG: {best}{tag} | {datetime.now().strftime('%d %b %H:%M')}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -535,8 +567,8 @@ def send_email(html: str, flights: list):
     msg["To"]      = RECIPIENT
 
     plain = f"Holiday Flight Search Results\n{datetime.now()}\n\n"
-    plain += f"{len(flights)} qualifying flight(s) found.\n\n"
-    for f in flights[:5]:
+    plain += f"{len(flights)} qualifying / {len(display)} shown.\n\n"
+    for f in display[:5]:
         plain += (
             f"€{f.get('price','?')} | {f.get('airline','?')} | "
             f"{f.get('duration_text','?')} | {f.get('stops_text','?')} | "
@@ -552,23 +584,27 @@ def send_email(html: str, flights: list):
         server.sendmail(GMAIL_USER, RECIPIENT, msg.as_string())
     print("  Email sent.")
 
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
     print(f"Holiday Flight Search  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    all_flights = []
+    all_raw      = []
+    all_filtered = []
+
     for date in DEPART_DATES:
-        raw = scrape_flights(date)
+        raw      = scrape_flights(date)
         filtered = filter_flights(raw)
         print(f"  {date}: {len(raw)} raw  ->  {len(filtered)} after filter")
-        all_flights.extend(filtered)
+        all_raw.extend(raw)
+        all_filtered.extend(filtered)
 
-    # Deduplicate and sort
-    all_flights.sort(key=lambda x: x.get("price", 9999))
+    # Deduplicate filtered results
+    all_filtered.sort(key=lambda x: x.get("price", 9999))
     seen, unique = set(), []
-    for f in all_flights:
+    for f in all_filtered:
         key = (f.get("price"), f.get("airline"), f.get("depart_date"))
         if key not in seen:
             seen.add(key)
@@ -576,9 +612,16 @@ def main():
 
     print(f"\nTotal unique qualifying flights: {len(unique)}")
 
-    html = build_html(unique)
-    send_email(html, unique)
+    # If nothing qualifies, find the closest fallback
+    fallback = find_closest_fallback(all_raw) if not unique else []
+    if fallback:
+        print(f"  No exact matches — showing closest fallback: "
+              f"{fallback[0].get('duration_text','?')} / {fallback[0].get('airline','?')}")
+
+    html = build_html(unique, fallback=fallback)
+    send_email(html, unique, fallback=fallback)
     print("\nDone!")
+
 
 if __name__ == "__main__":
     main()
