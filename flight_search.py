@@ -403,8 +403,8 @@ def build_html(flights: list, fallback: list = None) -> str:
         cards = """
         <div style="text-align:center;padding:60px 20px;color:#999;">
           <p style="font-size:48px;margin:0 0 16px;">&#9992;&#65039;</p>
-          <h3 style="font-weight:300;color:#aaa;margin:0 0 8px;">No flights found at all</h3>
-          <p style="margin:0;font-size:13px;">Google Flights may have blocked the search — will retry next run.</p>
+          <h3 style="font-weight:300;color:#aaa;margin:0 0 8px;">Search was blocked</h3>
+          <p style="margin:0;font-size:13px;">Skyscanner returned no data this run — likely bot detection. Will retry next run.</p>
         </div>"""
     else:
         if is_fallback:
@@ -463,11 +463,20 @@ def build_html(flights: list, fallback: list = None) -> str:
 
 
 # ── EMAIL SEND ────────────────────────────────────────────────────────────────
-def send_email(html: str, flights: list, fallback: list = None):
+def send_email(html: str, flights: list, fallback: list = None, blocked: bool = False):
     display = flights or fallback or []
-    best    = f"€{display[0]['price']:,}" if display else "No results"
-    tag     = " [closest match]" if not flights and fallback else ""
-    subject = f"DUB->PVG: {best}{tag} | {datetime.now().strftime('%d %b %H:%M')}"
+    ts      = datetime.now().strftime('%d %b %H:%M')
+
+    if blocked:
+        subject = f"DUB->PVG: [BLOCKED] Skyscanner returned no data | {ts}"
+    elif not flights and fallback:
+        best    = f"€{fallback[0]['price']:,}"
+        subject = f"DUB->PVG: [CLOSEST MATCH] {best} — no exact results | {ts}"
+    elif flights:
+        best    = f"€{flights[0]['price']:,}"
+        subject = f"DUB->PVG: {best} best price — {len(flights)} flight(s) found | {ts}"
+    else:
+        subject = f"DUB->PVG: [BLOCKED] No data returned | {ts}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -520,14 +529,18 @@ def main():
 
     print(f"\nTotal unique qualifying flights: {len(unique)}")
 
-    # If nothing qualifies, find the closest fallback
-    fallback = find_closest_fallback(all_raw) if not unique else []
-    if fallback:
-        print(f"  No exact matches — showing closest fallback: "
+    # Determine what to show
+    blocked  = len(all_raw) == 0
+    fallback = find_closest_fallback(all_raw) if (not unique and not blocked) else []
+
+    if blocked:
+        print("  Scraper was blocked — no raw flights returned at all")
+    elif fallback:
+        print(f"  No exact matches — closest fallback: "
               f"{fallback[0].get('duration_text','?')} / {fallback[0].get('airline','?')}")
 
     html = build_html(unique, fallback=fallback)
-    send_email(html, unique, fallback=fallback)
+    send_email(html, unique, fallback=fallback, blocked=blocked)
     print("\nDone!")
 
 
