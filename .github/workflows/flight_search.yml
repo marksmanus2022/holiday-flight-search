@@ -1,0 +1,44 @@
+name: Holiday Flight Search
+
+on:
+  schedule:
+    # 10:30 Dublin time (UTC+1 in April/May = 09:30 UTC)
+    - cron: '30 9 * * *'
+    # 22:30 Dublin time (UTC+1 in April/May = 21:30 UTC)
+    - cron: '30 21 * * *'
+  workflow_dispatch:   # allows manual trigger from GitHub UI for testing
+
+jobs:
+  search-flights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Run flight search
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python flight_search.py
+
+      - name: Upload debug screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: /tmp/*.png
+          retention-days: 3
