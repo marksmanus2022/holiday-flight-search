@@ -11,32 +11,16 @@ on:
 jobs:
   search-flights:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.44.0-jammy
     timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
       - name: Install Python dependencies
         run: pip install -r requirements.txt
-
-      - name: Install Playwright system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-            libcups2 libdrm2 libgbm1 libpango-1.0-0 libcairo2 \
-            libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxkbcommon0 \
-            libasound2t64 libx11-xcb1 libxcb-dri3-0
-
-      - name: Install Playwright Chromium
-        run: playwright install chromium
 
       - name: Run flight search
         env:
